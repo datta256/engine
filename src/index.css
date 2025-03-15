@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Add these styles after your existing Tailwind imports */
+.cm-editor {
+  height: 100%;
+}
+
+.cm-editor .cm-scroller {
+  font-family: 'Fira Code', monospace;
+  line-height: 1.6;
+}
+
+.cm-editor .cm-content {
+  white-space: pre-wrap;
+}

@@ -1,0 +1,1105 @@
+// ==================== MODEL SCRIPTS ====================
+
+// === Basic Character Controller ===
+// Description: WASD movement with animation switching
+function update(model, scene, THREE, getModelByName, getAnimationsForModel, playAnimation, stopAnimation, createHTML, removeHTML, input, delta, camera) {
+  // Initialize model properties on first run
+  if (!model.userData.initialized) {
+    model.userData.speed = 5;
+    model.userData.rotationSpeed = 3;
+    model.userData.isMoving = false;
+    model.userData.initialized = true;
+    
+    // Create UI instructions
+    createHTML(`
+      <div id="controls-${model.name}" style="
+        position: absolute;
+        bottom: 20px;
+        left: 20px;
+        background-color: rgba(0, 0, 0, 0.7);
+        color: white;
+        padding: 10px;
+        border-radius: 5px;
+        font-family: Arial, sans-serif;
+      ">
+        <h3>Controls</h3>
+        <p>W/A/S/D - Move the character</p>
+        <p>Space - Jump</p>
+      </div>
+    `);
+  }
+  
+  // Movement logic
+  let isMoving = false;
+  const moveDirection = new THREE.Vector3(0, 0, 0);
+  
+  // Forward/backward movement
+  if (input.keys.w) {
+    moveDirection.z = -1;
+    isMoving = true;
+  } else if (input.keys.s) {
+    moveDirection.z = 1;
+    isMoving = true;
+  }
+  
+  // Left/right movement
+  if (input.keys.a) {
+    moveDirection.x = -1;
+    isMoving = true;
+  } else if (input.keys.d) {
+    moveDirection.x = 1;
+    isMoving = true;
+  }
+  
+  // Normalize movement direction
+  if (moveDirection.length() > 0) {
+    moveDirection.normalize();
+  }
+  
+  // Apply movement
+  model.position.x += moveDirection.x * model.userData.speed * delta;
+  model.position.z += moveDirection.z * model.userData.speed * delta;
+  
+  // Handle rotation to face movement direction
+  if (isMoving) {
+    const targetRotation = Math.atan2(moveDirection.x, -moveDirection.z);
+    model.rotation.y = THREE.MathUtils.lerp(
+      model.rotation.y,
+      targetRotation,
+      model.userData.rotationSpeed * delta
+    );
+    
+    // Play running animation
+    playAnimation(model.name, 'run');
+  } else {
+    // Play idle animation when not moving
+    playAnimation(model.name, 'idle');
+  }
+  
+  // Jump logic
+  if (input.keys[' '] && !model.userData.isJumping) {
+    model.userData.isJumping = true;
+    model.userData.jumpTime = 0;
+    playAnimation(model.name, 'jump');
+  }
+  
+  // Handle jump physics
+  if (model.userData.isJumping) {
+    model.userData.jumpTime += delta;
+    
+    // Simple parabolic jump
+    const jumpHeight = 2;
+    const jumpDuration = 1;
+    const jumpProgress = model.userData.jumpTime / jumpDuration;
+    
+    if (jumpProgress < 1) {
+      // Parabolic curve: 4 * h * t * (1 - t)
+      model.position.y = 4 * jumpHeight * jumpProgress * (1 - jumpProgress);
+    } else {
+      model.position.y = 0;
+      model.userData.isJumping = false;
+    }
+  }
+}
+
+return { update };
+
+// === Follow Camera ===
+// Description: Camera that follows the model and can be rotated with mouse
+function update(model, scene, THREE, getModelByName, getAnimationsForModel, playAnimation, stopAnimation, createHTML, removeHTML, input, delta, camera) {
+  // Initialize camera settings on first run
+  if (!model.userData.cameraInitialized) {
+    model.userData.cameraDistance = 5;
+    model.userData.cameraHeight = 2;
+    model.userData.cameraRotation = 0;
+    model.userData.cameraInitialized = true;
+  }
+  
+  // Update camera rotation based on mouse movement if right mouse button is pressed
+  if (input.mouse.buttons[2]) {
+    // Store initial mouse position on right-click start
+    if (!model.userData.isDragging) {
+      model.userData.isDragging = true;
+      model.userData.lastMouseX = input.mouse.x;
+    }
+    
+    // Calculate mouse movement delta
+    const mouseDelta = input.mouse.x - model.userData.lastMouseX;
+    model.userData.cameraRotation += mouseDelta * 0.01;
+    model.userData.lastMouseX = input.mouse.x;
+  } else {
+    model.userData.isDragging = false;
+  }
+  
+  // Calculate camera position
+  const cameraOffset = new THREE.Vector3(
+    Math.sin(model.userData.cameraRotation) * model.userData.cameraDistance,
+    model.userData.cameraHeight,
+    Math.cos(model.userData.cameraRotation) * model.userData.cameraDistance
+  );
+  
+  // Set camera position relative to model
+  camera.position.copy(model.position).add(cameraOffset);
+  
+  // Make camera look at model
+  camera.lookAt(
+    model.position.x,
+    model.position.y + 1, // Look at head level
+    model.position.z
+  );
+}
+
+return { update };
+
+// === Interactive Object ===
+// Description: Object that responds to player proximity and clicks
+function update(model, scene, THREE, getModelByName, getAnimationsForModel, playAnimation, stopAnimation, createHTML, removeHTML, input, delta, camera) {
+  // Initialize on first run
+  if (!model.userData.initialized) {
+    model.userData.initialized = true;
+    model.userData.isHighlighted = false;
+    model.userData.originalColor = null;
+    model.userData.interactionDistance = 3;
+    model.userData.hasInteracted = false;
+    
+    // Store original materials for highlighting
+    model.userData.originalMaterials = [];
+    model.traverse(child => {
+      if (child.isMesh && child.material) {
+        if (Array.isArray(child.material)) {
+          model.userData.originalMaterials.push(...child.material.map(m => m.clone()));
+        } else {
+          model.userData.originalMaterials.push(child.material.clone());
+        }
+      }
+    });
+  }
+  
+  // Find player model
+  const player = getModelByName('player.glb');
+  if (!player) return;
+  
+  // Calculate distance to player
+  const distanceToPlayer = player.position.distanceTo(model.position);
+  
+  // Handle proximity highlighting
+  if (distanceToPlayer < model.userData.interactionDistance) {
+    // Highlight object when player is close
+    if (!model.userData.isHighlighted) {
+      model.userData.isHighlighted = true;
+      
+      // Apply highlight material
+      model.traverse(child => {
+        if (child.isMesh && child.material) {
+          if (Array.isArray(child.material)) {
+            child.material.forEach(mat => {
+              mat.emissive = new THREE.Color(0x333333);
+              mat.emissiveIntensity = 0.5;
+            });
+          } else {
+            child.material.emissive = new THREE.Color(0x333333);
+            child.material.emissiveIntensity = 0.5;
+          }
+        }
+      });
+      
+      // Show interaction prompt
+      createHTML(`
+        <div id="interact-prompt" style="
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          background-color: rgba(0, 0, 0, 0.7);
+          color: white;
+          padding: 10px 20px;
+          border-radius: 5px;
+          font-family: Arial, sans-serif;
+          pointer-events: none;
+        ">
+          Click to interact
+        </div>
+      `);
+    }
+    
+    // Handle click interaction
+    if (input.mouse.buttons[0] && !model.userData.hasInteracted) {
+      // Perform interaction
+      model.userData.hasInteracted = true;
+      
+      // Play animation if available
+      playAnimation(model.name, 'activate');
+      
+      // Show interaction result
+      removeHTML('interact-prompt');
+      createHTML(`
+        <div id="interaction-result" style="
+          position: absolute;
+          top: 30%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          background-color: rgba(0, 0, 0, 0.8);
+          color: white;
+          padding: 15px 25px;
+          border-radius: 5px;
+          font-family: Arial, sans-serif;
+          pointer-events: none;
+        ">
+          <h3>Item Discovered!</h3>
+          <p>You found a mysterious artifact.</p>
+        </div>
+      `);
+      
+      // Remove the result after 3 seconds
+      setTimeout(() => {
+        removeHTML('interaction-result');
+      }, 3000);
+    }
+  } else {
+    // Remove highlight when player moves away
+    if (model.userData.isHighlighted) {
+      model.userData.isHighlighted = false;
+      
+      // Restore original materials
+      model.traverse(child => {
+        if (child.isMesh && child.material) {
+          if (Array.isArray(child.material)) {
+            child.material.forEach(mat => {
+              mat.emissive = new THREE.Color(0x000000);
+              mat.emissiveIntensity = 0;
+            });
+          } else {
+            child.material.emissive = new THREE.Color(0x000000);
+            child.material.emissiveIntensity = 0;
+          }
+        }
+      });
+      
+      // Remove interaction prompt
+      removeHTML('interact-prompt');
+    }
+  }
+}
+
+return { update };
+
+// === NPC AI Behavior ===
+// Description: Simple AI for NPCs with patrolling and player interaction
+function update(model, scene, THREE, getModelByName, getAnimationsForModel, playAnimation, stopAnimation, createHTML, removeHTML, input, delta, camera) {
+  // Initialize on first run
+  if (!model.userData.initialized) {
+    model.userData.initialized = true;
+    model.userData.state = 'patrol'; // patrol, chase, talk
+    model.userData.speed = 2;
+    model.userData.rotationSpeed = 2;
+    model.userData.patrolPoints = [
+      new THREE.Vector3(5, 0, 5),
+      new THREE.Vector3(-5, 0, 5),
+      new THREE.Vector3(-5, 0, -5),
+      new THREE.Vector3(5, 0, -5)
+    ];
+    model.userData.currentPatrolIndex = 0;
+    model.userData.detectionRadius = 8;
+    model.userData.interactionRadius = 3;
+    model.userData.dialogueActive = false;
+    model.userData.dialogueStep = 0;
+    
+    // Set initial position to first patrol point
+    model.position.copy(model.userData.patrolPoints[0]);
+  }
+  
+  // Find player
+  const player = getModelByName('player.glb');
+  if (!player) return;
+  
+  // Calculate distance to player
+  const distanceToPlayer = player.position.distanceTo(model.position);
+  
+  // State machine
+  switch (model.userData.state) {
+    case 'patrol':
+      // Get current patrol target
+      const targetPoint = model.userData.patrolPoints[model.userData.currentPatrolIndex];
+      
+      // Move towards target
+      const directionToTarget = new THREE.Vector3()
+        .subVectors(targetPoint, model.position)
+        .normalize();
+      
+      // Check if we've reached the target (within 0.5 units)
+      const distanceToTarget = model.position.distanceTo(targetPoint);
+      if (distanceToTarget > 0.5) {
+        // Move towards target
+        model.position.x += directionToTarget.x * model.userData.speed * delta;
+        model.position.z += directionToTarget.z * model.userData.speed * delta;
+        
+        // Rotate towards movement direction
+        const targetRotation = Math.atan2(directionToTarget.x, -directionToTarget.z);
+        model.rotation.y = THREE.MathUtils.lerp(
+          model.rotation.y,
+          targetRotation,
+          model.userData.rotationSpeed * delta
+        );
+        
+        // Play walking animation
+        playAnimation(model.name, 'walk');
+      } else {
+        // Move to next patrol point
+        model.userData.currentPatrolIndex = 
+          (model.userData.currentPatrolIndex + 1) % model.userData.patrolPoints.length;
+        
+        // Play idle animation briefly
+        playAnimation(model.name, 'idle');
+      }
+      
+      // Check if player is detected
+      if (distanceToPlayer < model.userData.detectionRadius) {
+        model.userData.state = 'chase';
+      }
+      break;
+      
+    case 'chase':
+      // Move towards player
+      const directionToPlayer = new THREE.Vector3()
+        .subVectors(player.position, model.position)
+        .normalize();
+      
+      // Move towards player
+      model.position.x += directionToPlayer.x * model.userData.speed * 1.5 * delta;
+      model.position.z += directionToPlayer.z * model.userData.speed * 1.5 * delta;
+      
+      // Rotate towards player
+      const targetRotationToPlayer = Math.atan2(directionToPlayer.x, -directionToPlayer.z);
+      model.rotation.y = THREE.MathUtils.lerp(
+        model.rotation.y,
+        targetRotationToPlayer,
+        model.userData.rotationSpeed * delta
+      );
+      
+      // Play running animation
+      playAnimation(model.name, 'run');
+      
+      // Check if close enough to interact
+      if (distanceToPlayer < model.userData.interactionRadius) {
+        model.userData.state = 'talk';
+        stopAnimation(model.name);
+        playAnimation(model.name, 'idle');
+      }
+      
+      // If player gets too far, go back to patrolling
+      if (distanceToPlayer > model.userData.detectionRadius * 1.5) {
+        model.userData.state = 'patrol';
+      }
+      break;
+      
+    case 'talk':
+      // Always face the player
+      const lookAtPlayer = new THREE.Vector3()
+        .subVectors(player.position, model.position)
+        .normalize();
+      const talkRotation = Math.atan2(lookAtPlayer.x, -lookAtPlayer.z);
+      model.rotation.y = THREE.MathUtils.lerp(
+        model.rotation.y,
+        talkRotation,
+        model.userData.rotationSpeed * 2 * delta
+      );
+      
+      // Show dialogue if not already active
+      if (!model.userData.dialogueActive) {
+        model.userData.dialogueActive = true;
+        
+        // Display dialogue based on current step
+        const dialogues = [
+          "Hello traveler! Welcome to our village.",
+          "I haven't seen you around here before.",
+          "Be careful in the forest to the north. Strange things have been happening there.",
+          "If you need supplies, visit the merchant by the town square."
+        ];
+        
+        createHTML(`
+          <div id="npc-dialogue" style="
+            position: absolute;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 15px 25px;
+            border-radius: 5px;
+            font-family: Arial, sans-serif;
+            max-width: 80%;
+            text-align: center;
+          ">
+            <p>${dialogues[model.userData.dialogueStep]}</p>
+            <div style="
+              margin-top: 10px;
+              font-size: 0.8em;
+              color: #aaa;
+            ">Click to continue</div>
+          </div>
+        `);
+        
+        // Play talking animation
+        playAnimation(model.name, 'talk');
+      }
+      
+      // Handle dialogue advancement
+      if (input.mouse.buttons[0] && !model.userData.dialogueClicked) {
+        model.userData.dialogueClicked = true;
+        model.userData.dialogueStep = (model.userData.dialogueStep + 1) % 4;
+        
+        // Remove current dialogue
+        removeHTML('npc-dialogue');
+        model.userData.dialogueActive = false;
+        
+        // If we've gone through all dialogues, go back to patrol
+        if (model.userData.dialogueStep === 0) {
+          model.userData.state = 'patrol';
+        }
+      } else if (!input.mouse.buttons[0]) {
+        model.userData.dialogueClicked = false;
+      }
+      
+      // If player moves away, go back to chase
+      if (distanceToPlayer > model.userData.interactionRadius) {
+        model.userData.state = 'chase';
+        removeHTML('npc-dialogue');
+        model.userData.dialogueActive = false;
+      }
+      break;
+  }
+}
+
+return { update };
+
+// === Physics-Based Object ===
+// Description: Object with simple physics like gravity and bouncing
+function update(model, scene, THREE, getModelByName, getAnimationsForModel, playAnimation, stopAnimation, createHTML, removeHTML, input, delta, camera) {
+  // Initialize physics properties on first run
+  if (!model.userData.physicsInitialized) {
+    model.userData.velocity = new THREE.Vector3(0, 0, 0);
+    model.userData.acceleration = new THREE.Vector3(0, -9.8, 0); // Gravity
+    model.userData.mass = 1;
+    model.userData.restitution = 0.7; // Bounciness
+    model.userData.friction = 0.95; // Friction coefficient
+    model.userData.isOnGround = false;
+    model.userData.physicsInitialized = true;
+    
+    // Set initial position
+    model.position.set(0, 5, 0);
+  }
+  
+  // Apply forces
+  model.userData.velocity.add(model.userData.acceleration.clone().multiplyScalar(delta));
+  
+  // Apply velocity
+  model.position.add(model.userData.velocity.clone().multiplyScalar(delta));
+  
+  // Ground collision detection (assuming ground is at y=0)
+  if (model.position.y < 0.5) { // 0.5 is half the height of the object
+    model.position.y = 0.5;
+    
+    // Bounce when hitting the ground
+    if (model.userData.velocity.y < 0) {
+      model.userData.velocity.y = -model.userData.velocity.y * model.userData.restitution;
+      
+      // Apply friction to x and z velocity when on ground
+      model.userData.velocity.x *= model.userData.friction;
+      model.userData.velocity.z *= model.userData.friction;
+      
+      // Stop bouncing if velocity is very low
+      if (Math.abs(model.userData.velocity.y) < 0.2) {
+        model.userData.velocity.y = 0;
+        model.userData.isOnGround = true;
+      }
+    }
+  } else {
+    model.userData.isOnGround = false;
+  }
+  
+  // Apply force when spacebar is pressed
+  if (input.keys[' '] && model.userData.isOnGround) {
+    model.userData.velocity.y = 5; // Jump force
+    model.userData.isOnGround = false;
+  }
+  
+  // Apply horizontal forces with WASD
+  const moveForce = 10 * delta;
+  if (input.keys.w) {
+    model.userData.velocity.z -= moveForce;
+  }
+  if (input.keys.s) {
+    model.userData.velocity.z += moveForce;
+  }
+  if (input.keys.a) {
+    model.userData.velocity.x -= moveForce;
+  }
+  if (input.keys.d) {
+    model.userData.velocity.x += moveForce;
+  }
+  
+  // Rotate model based on movement direction
+  if (Math.abs(model.userData.velocity.x) > 0.1 || Math.abs(model.userData.velocity.z) > 0.1) {
+    const movementDirection = new THREE.Vector2(model.userData.velocity.x, model.userData.velocity.z).normalize();
+    const targetRotation = Math.atan2(movementDirection.x, -movementDirection.y);
+    model.rotation.y = THREE.MathUtils.lerp(model.rotation.y, targetRotation, 5 * delta);
+  }
+}
+
+return { update };
+
+// ==================== SCENE SCRIPTS ====================
+
+// === Day/Night Cycle ===
+// Description: Creates a realistic day/night cycle with changing lighting
+function update(scene, THREE, getModelByName, getAnimationsForModel, playAnimation, stopAnimation, createHTML, removeHTML, input, delta, camera) {
+  // Initialize on first run
+  if (!scene.userData.dayNightInitialized) {
+    scene.userData.dayNightInitialized = true;
+    scene.userData.timeOfDay = 0; // 0-24 hours
+    scene.userData.dayDuration = 300; // seconds for a full day/night cycle
+    scene.userData.timeSpeed = 24 / scene.userData.dayDuration; // hours per second
+    
+    // Create sun
+    const sunLight = new THREE.DirectionalLight(0xffffcc, 1);
+    sunLight.name = 'sunLight';
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.width = 2048;
+    sunLight.shadow.mapSize.height = 2048;
+    sunLight.shadow.camera.near = 0.5;
+    sunLight.shadow.camera.far = 50;
+    sunLight.shadow.camera.left = -20;
+    sunLight.shadow.camera.right = 20;
+    sunLight.shadow.camera.top = 20;
+    sunLight.shadow.camera.bottom = -20;
+    scene.add(sunLight);
+    
+    // Create moon
+    const moonLight = new THREE.DirectionalLight(0x8888ff, 0.5);
+    moonLight.name = 'moonLight';
+    moonLight.castShadow = true;
+    moonLight.shadow.mapSize.width = 1024;
+    moonLight.shadow.mapSize.height = 1024;
+    moonLight.shadow.camera.near = 0.5;
+    moonLight.shadow.camera.far = 50;
+    scene.add(moonLight);
+    
+    // Create ambient light
+    const ambientLight = new THREE.AmbientLight(0x404040, 0.2);
+    ambientLight.name = 'ambientLight';
+    scene.add(ambientLight);
+    
+    // Create sky hemisphere light
+    const hemisphereLight = new THREE.HemisphereLight(0x87CEEB, 0x404040, 0.5);
+    hemisphereLight.name = 'hemisphereLight';
+    scene.add(hemisphereLight);
+    
+    // Create UI for time display
+    createHTML(`
+      <div id="time-display" style="
+        position: absolute;
+        top: 20px;
+        right: 20px;
+        background-color: rgba(0, 0, 0, 0.7);
+        color: white;
+        padding: 10px;
+        border-radius: 5px;
+        font-family: Arial, sans-serif;
+      ">
+        <h3>Time: 00:00</h3>
+      </div>
+    `);
+  }
+  
+  // Update time of day
+  scene.userData.timeOfDay += scene.userData.timeSpeed * delta;
+  if (scene.userData.timeOfDay >= 24) {
+    scene.userData.timeOfDay -= 24;
+  }
+  
+  // Update time display
+  const hours = Math.floor(scene.userData.timeOfDay);
+  const minutes = Math.floor((scene.userData.timeOfDay - hours) * 60);
+  const timeDisplay = document.getElementById('time-display');
+  if (timeDisplay) {
+    timeDisplay.innerHTML = `
+      <h3>Time: ${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}</h3>
+    `;
+  }
+  
+  // Calculate sun and moon positions
+  const sunAngle = (scene.userData.timeOfDay / 24) * Math.PI * 2 - Math.PI / 2;
+  const moonAngle = sunAngle + Math.PI;
+  
+  // Get light objects
+  const sunLight = scene.getObjectByName('sunLight');
+  const moonLight = scene.getObjectByName('moonLight');
+  const ambientLight = scene.getObjectByName('ambientLight');
+  const hemisphereLight = scene.getObjectByName('hemisphereLight');
+  
+  if (sunLight && moonLight && ambientLight && hemisphereLight) {
+    // Update sun position
+    sunLight.position.x = Math.cos(sunAngle) * 20;
+    sunLight.position.y = Math.sin(sunAngle) * 20;
+    sunLight.position.z = 0;
+    
+    // Update moon position
+    moonLight.position.x = Math.cos(moonAngle) * 20;
+    moonLight.position.y = Math.sin(moonAngle) * 20;
+    moonLight.position.z = 0;
+    
+    // Calculate sun and moon intensities based on their height
+    const sunHeight = Math.sin(sunAngle);
+    const moonHeight = Math.sin(moonAngle);
+    
+    // Sun is visible when above horizon
+    const sunIntensity = Math.max(0, sunHeight);
+    sunLight.intensity = sunIntensity * 1.5;
+    
+    // Moon is visible when above horizon
+    const moonIntensity = Math.max(0, moonHeight) * 0.5;
+    moonLight.intensity = moonIntensity;
+    
+    // Adjust ambient light based on time of day
+    ambientLight.intensity = 0.2 + sunIntensity * 0.3 + moonIntensity * 0.1;
+    
+    // Adjust hemisphere light based on time of day
+    hemisphereLight.intensity = 0.2 + sunIntensity * 0.8;
+    
+    // Change sky color based on time of day
+    if (sunHeight > 0.2) {
+      // Day - blue sky
+      scene.background = new THREE.Color(0x87CEEB);
+      hemisphereLight.color.set(0x87CEEB);
+    } else if (sunHeight > -0.2) {
+      // Sunrise/sunset - orange sky
+      const t = (sunHeight + 0.2) / 0.4; // 0 to 1
+      const skyColor = new THREE.Color().lerpColors(
+        new THREE.Color(0xFF7F50), // Sunset orange
+        new THREE.Color(0x87CEEB), // Day blue
+        t
+      );
+      scene.background = skyColor;
+      hemisphereLight.color.set(skyColor);
+    } else {
+      // Night - dark blue sky
+      scene.background = new THREE.Color(0x0A1020);
+      hemisphereLight.color.set(0x0A1020);
+    }
+    
+    // Adjust sun color based on height (redder at sunrise/sunset)
+    if (sunHeight > 0 && sunHeight < 0.3) {
+      // Sunrise
+      const t = sunHeight / 0.3; // 0 to 1
+      sunLight.color.lerpColors(
+        new THREE.Color(0xFF7F50), // Sunrise orange
+        new THREE.Color(0xFFFFCC), // Day white-yellow
+        t
+      );
+    } else if (sunHeight > 0.3) {
+      // Day
+      sunLight.color.set(0xFFFFCC);
+    }
+  }
+}
+
+return { update };
+
+
+
+// === WASD Movement with Gravity and Basic Collision ===
+// Description: Character controller with gravity and simple collision detection
+function update(model, scene, THREE, getModelByName, getAnimationsForModel, playAnimation, stopAnimation, createHTML, removeHTML, input, delta, camera) {
+  // Initialize on first run
+  if (!model.userData.initialized) {
+    model.userData.initialized = true;
+    model.userData.velocity = new THREE.Vector3(0, 0, 0);
+    model.userData.speed = 5;
+    model.userData.gravity = 9.8;
+    model.userData.jumpForce = 5;
+    model.userData.isGrounded = false;
+    model.userData.collisionObjects = [];
+    
+    // Find collision objects in the scene
+    scene.traverse(object => {
+      if (object.userData.isCollidable) {
+        model.userData.collisionObjects.push(object);
+      }
+    });
+    
+    // Create simple ground if none exists
+    if (model.userData.collisionObjects.length === 0) {
+      const groundGeometry = new THREE.PlaneGeometry(20, 20);
+      const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
+      const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+      ground.rotation.x = -Math.PI / 2;
+      ground.position.y = 0;
+      ground.userData.isCollidable = true;
+      scene.add(ground);
+      model.userData.collisionObjects.push(ground);
+    }
+    
+    // Create UI instructions
+    createHTML(`
+      <div id="controls-${model.name}" style="
+        position: absolute;
+        bottom: 20px;
+        left: 20px;
+        background-color: rgba(0, 0, 0, 0.7);
+        color: white;
+        padding: 10px;
+        border-radius: 5px;
+        font-family: Arial, sans-serif;
+      ">
+        <h3>Controls</h3>
+        <p>WASD - Move</p>
+        <p>Space - Jump</p>
+      </div>
+    `);
+  }
+  
+  // Apply gravity
+  if (!model.userData.isGrounded) {
+    model.userData.velocity.y -= model.userData.gravity * delta;
+  }
+  
+  // Handle WASD movement
+  const moveDirection = new THREE.Vector3(0, 0, 0);
+  
+  if (input.keys.w) moveDirection.z -= 1;
+  if (input.keys.s) moveDirection.z += 1;
+  if (input.keys.a) moveDirection.x -= 1;
+  if (input.keys.d) moveDirection.x += 1;
+  
+  // Normalize movement direction
+  if (moveDirection.length() > 0) {
+    moveDirection.normalize();
+    
+    // Set horizontal velocity based on movement direction
+    model.userData.velocity.x = moveDirection.x * model.userData.speed;
+    model.userData.velocity.z = moveDirection.z * model.userData.speed;
+    
+    // Rotate model to face movement direction
+    if (moveDirection.length() > 0) {
+      const targetRotation = Math.atan2(moveDirection.x, -moveDirection.z);
+      model.rotation.y = THREE.MathUtils.lerp(
+        model.rotation.y,
+        targetRotation,
+        10 * delta
+      );
+    }
+    
+    // Play running animation
+    playAnimation(model.name, 'run');
+  } else {
+    // Slow down horizontal movement when no keys are pressed
+    model.userData.velocity.x *= 0.9;
+    model.userData.velocity.z *= 0.9;
+    
+    // Play idle animation
+    playAnimation(model.name, 'idle');
+  }
+  
+  // Handle jumping
+  if (input.keys[' '] && model.userData.isGrounded) {
+    model.userData.velocity.y = model.userData.jumpForce;
+    model.userData.isGrounded = false;
+    playAnimation(model.name, 'jump');
+  }
+  
+  // Apply velocity to position
+  model.position.x += model.userData.velocity.x * delta;
+  model.position.y += model.userData.velocity.y * delta;
+  model.position.z += model.userData.velocity.z * delta;
+  
+  // Ground collision detection
+  model.userData.isGrounded = false;
+  const modelHeight = 1; // Approximate model height
+  
+  // Check if we're below ground level
+  if (model.position.y < modelHeight / 2) {
+    model.position.y = modelHeight / 2;
+    model.userData.velocity.y = 0;
+    model.userData.isGrounded = true;
+  }
+  
+  // Simple collision detection with other objects
+  const modelRadius = 0.5; // Approximate model radius
+  
+  model.userData.collisionObjects.forEach(object => {
+    if (object.geometry && object.geometry.boundingBox) {
+      // Use bounding box for collision
+      const objectBox = object.geometry.boundingBox.clone();
+      objectBox.applyMatrix4(object.matrixWorld);
+      
+      const modelPosition = new THREE.Vector3(
+        model.position.x,
+        model.position.y,
+        model.position.z
+      );
+      
+      if (objectBox.containsPoint(modelPosition)) {
+        // Handle collision by pushing the model out
+        // This is a simplified approach
+        const objectCenter = new THREE.Vector3();
+        objectBox.getCenter(objectCenter);
+        
+        const pushDirection = new THREE.Vector3()
+          .subVectors(modelPosition, objectCenter)
+          .normalize();
+        
+        model.position.add(pushDirection.multiplyScalar(0.1));
+        
+        // Zero out velocity in the collision direction
+        if (Math.abs(pushDirection.y) > 0.7) {
+          model.userData.velocity.y = 0;
+          if (pushDirection.y > 0) {
+            model.userData.isGrounded = true;
+          }
+        }
+        
+        if (Math.abs(pushDirection.x) > 0.7) {
+          model.userData.velocity.x = 0;
+        }
+        
+        if (Math.abs(pushDirection.z) > 0.7) {
+          model.userData.velocity.z = 0;
+        }
+      }
+    }
+  });
+}
+
+return { update };
+//works 
+
+// === Advanced Physics with Raycasting Collision ===
+works 
+// Description: WASD movement with realistic physics and raycasting for precise collision detection
+function update(model, scene, THREE, getModelByName, getAnimationsForModel, playAnimation, stopAnimation, createHTML, removeHTML, input, delta, camera) {
+  // Initialize on first run
+  if (!model.userData.initialized) {
+    model.userData.initialized = true;
+    model.userData.velocity = new THREE.Vector3(0, 0, 0);
+    model.userData.acceleration = new THREE.Vector3(0, -9.8, 0); // Gravity
+    model.userData.moveSpeed = 10;
+    model.userData.jumpForce = 5;
+    model.userData.isGrounded = false;
+    model.userData.groundRayLength = 1.1; // Slightly more than character height/2
+    model.userData.collisionRayCount = 8; // Number of rays for collision detection
+    model.userData.collisionRayLength = 0.6; // Length of collision rays
+    model.userData.friction = 0.8; // Ground friction
+    model.userData.airControl = 0.3; // Movement control in air
+    
+    // Create raycaster for ground detection
+    model.userData.raycaster = new THREE.Raycaster();
+    
+    // Create UI instructions
+    createHTML(`
+      <div id="physics-controls" style="
+        position: absolute;
+        bottom: 20px;
+        left: 20px;
+        background-color: rgba(0, 0, 0, 0.7);
+        color: white;
+        padding: 10px;
+        border-radius: 5px;
+        font-family: Arial, sans-serif;
+      ">
+        <h3>Advanced Physics Controls</h3>
+        <p>WASD - Move</p>
+        <p>Space - Jump</p>
+        <p>Shift - Sprint</p>
+      </div>
+    `);
+  }
+  
+  // Get movement input
+  const moveDirection = new THREE.Vector3(0, 0, 0);
+  
+  if (input.keys.w) moveDirection.z -= 1;
+  if (input.keys.s) moveDirection.z += 1;
+  if (input.keys.a) moveDirection.x -= 1;
+  if (input.keys.d) moveDirection.x += 1;
+  
+  // Normalize movement direction
+  if (moveDirection.length() > 0) {
+    moveDirection.normalize();
+    
+    // Rotate model to face movement direction
+    const targetRotation = Math.atan2(moveDirection.x, -moveDirection.z);
+    model.rotation.y = THREE.MathUtils.lerp(
+      model.rotation.y,
+      targetRotation,
+      10 * delta
+    );
+    
+    // Play appropriate animation
+    if (model.userData.isGrounded) {
+      if (input.keys.shift) {
+        playAnimation(model.name, 'run');
+      } else {
+        playAnimation(model.name, 'walk');
+      }
+    }
+  } else if (model.userData.isGrounded) {
+    playAnimation(model.name, 'idle');
+  }
+  
+  // Ground detection using raycasting
+  model.userData.raycaster.set(
+    model.position.clone().add(new THREE.Vector3(0, 0.1, 0)), // Start slightly above model
+    new THREE.Vector3(0, -1, 0) // Ray direction: downward
+  );
+  
+  const intersects = model.userData.raycaster.intersectObjects(scene.children, true);
+  
+  // Check if we're on the ground
+  const wasGrounded = model.userData.isGrounded;
+  model.userData.isGrounded = false;
+  
+  for (let i = 0; i < intersects.length; i++) {
+    if (intersects[i].distance < model.userData.groundRayLength && 
+        intersects[i].object !== model) {
+      model.userData.isGrounded = true;
+      
+      // Snap to ground
+      if (model.userData.velocity.y <= 0) {
+        model.position.y = intersects[i].point.y + model.userData.groundRayLength - 0.1;
+        model.userData.velocity.y = 0;
+      }
+      
+      break;
+    }
+  }
+  
+  // Play landing animation when hitting ground
+  if (!wasGrounded && model.userData.isGrounded) {
+    playAnimation(model.name, 'land');
+    setTimeout(() => {
+      if (model.userData.isGrounded) {
+        playAnimation(model.name, 'idle');
+      }
+    }, 300);
+  }
+  
+  // Apply movement force
+  if (moveDirection.length() > 0) {
+    const controlFactor = model.userData.isGrounded ? 1 : model.userData.airControl;
+    const speedMultiplier = input.keys.shift ? 2 : 1;
+    
+    // Apply movement force
+    model.userData.velocity.x += moveDirection.x * model.userData.moveSpeed * controlFactor * delta * speedMultiplier;
+    model.userData.velocity.z += moveDirection.z * model.userData.moveSpeed * controlFactor * delta * speedMultiplier;
+  }
+  
+  // Apply friction when on ground
+  if (model.userData.isGrounded) {
+    model.userData.velocity.x *= model.userData.friction;
+    model.userData.velocity.z *= model.userData.friction;
+    
+    // Prevent sliding when velocity is very low
+    if (Math.abs(model.userData.velocity.x) < 0.01) model.userData.velocity.x = 0;
+    if (Math.abs(model.userData.velocity.z) < 0.01) model.userData.velocity.z = 0;
+  }
+  
+  // Apply gravity
+  if (!model.userData.isGrounded) {
+    model.userData.velocity.add(model.userData.acceleration.clone().multiplyScalar(delta));
+  }
+  
+  // Handle jumping
+  if (input.keys[' '] && model.userData.isGrounded) {
+    model.userData.velocity.y = model.userData.jumpForce;
+    model.userData.isGrounded = false;
+    playAnimation(model.name, 'jump');
+  }
+  
+  // Horizontal collision detection using raycasting
+  const horizontalCollision = (direction) => {
+    // Create rays in a circle around the model
+    for (let i = 0; i < model.userData.collisionRayCount; i++) {
+      const angle = (i / model.userData.collisionRayCount) * Math.PI * 2;
+      const rayDirection = new THREE.Vector3(
+        Math.sin(angle),
+        0,
+        Math.cos(angle)
+      );
+      
+      // Only check rays that are in the general direction of movement
+      if (rayDirection.dot(direction) > 0.3) {
+        model.userData.raycaster.set(
+          model.position.clone(),
+          rayDirection
+        );
+        
+        const intersects = model.userData.raycaster.intersectObjects(scene.children, true);
+        
+        for (let j = 0; j < intersects.length; j++) {
+          if (intersects[j].distance < model.userData.collisionRayLength && 
+              intersects[j].object !== model) {
+            // Collision detected, adjust velocity
+            const collisionNormal = intersects[j].face.normal.clone();
+            
+            // Project velocity onto collision plane
+            const dot = model.userData.velocity.dot(collisionNormal);
+            model.userData.velocity.sub(collisionNormal.multiplyScalar(dot));
+            
+            // Move model away from collision
+            const pushDistance = model.userData.collisionRayLength - intersects[j].distance;
+            model.position.add(collisionNormal.multiplyScalar(pushDistance));
+            
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+  
+  // Calculate movement direction for collision detection
+  const movementDirection = new THREE.Vector3(
+    model.userData.velocity.x,
+    0,
+    model.userData.velocity.z
+  ).normalize();
+  
+  // Check for collisions
+  if (movementDirection.length() > 0) {
+    horizontalCollision(movementDirection);
+  }
+  
+  // Apply velocity to position
+  model.position.x += model.userData.velocity.x * delta;
+  model.position.y += model.userData.velocity.y * delta;
+  model.position.z += model.userData.velocity.z * delta;
+  
+  // Terminal velocity
+  const terminalVelocity = 20;
+  if (model.userData.velocity.y < -terminalVelocity) {
+    model.userData.velocity.y = -terminalVelocity;
+  }
+  
+  // Display debug info
+  createHTML(`
+    <div id="physics-debug" style="
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      background-color: rgba(0, 0, 0, 0.5);
+      color: white;
+      padding: 5px;
+      font-family: monospace;
+      font-size: 12px;
+    ">
+      <p>Position: ${model.position.x.toFixed(2)}, ${model.position.y.toFixed(2)}, ${model.position.z.toFixed(2)}</p>
+      <p>Velocity: ${model.userData.velocity.x.toFixed(2)}, ${model.userData.velocity.y.toFixed(2)}, ${model.userData.velocity.z.toFixed(2)}</p>
+      <p>Grounded: ${model.userData.isGrounded ? 'Yes' : 'No'}</p>
+    </div>
+  `);
+}
+
+return { update };
+
+
+
